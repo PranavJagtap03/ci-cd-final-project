@@ -1,0 +1,87 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: cd-pipeline
+spec:
+  workspaces:
+    - name: pipeline-workspace
+  params:
+    - name: repo-url
+    - name: branch
+      default: main
+    - name: build-image
+  tasks:
+    - name: cleanup
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: cleanup
+
+    - name: git-clone
+      workspaces:
+        - name: output
+          workspace: pipeline-workspace
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.branch)
+      runAfter:
+        - cleanup
+
+    - name: flake8
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: flake8
+      runAfter:
+        - git-clone
+
+    - name: nose
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: nose
+      params:
+        - name: args
+          value: "-v"
+      runAfter:
+        - git-clone
+
+    - name: buildah
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: buildah
+        kind: ClusterTask
+      params:
+        - name: IMAGE
+          value: $(params.build-image)
+      runAfter:
+        - nose
+        - flake8
+
+    - name: deploy
+      workspaces:
+        - name: manifest-dir
+          workspace: pipeline-workspace
+      taskRef:
+        name: openshift-client
+        kind: ClusterTask
+      params:
+        - name: SCRIPT
+          value: |
+            echo "Deploying $(params.build-image)"
+            oc create deploy cd-app --image=$(params.build-image) --dry-run=client -o yaml > /tmp/deploy.yaml
+            cat /tmp/deploy.yaml
+            oc apply -f /tmp/deploy.yaml
+            oc get pods -l app=cd-app
+      runAfter:
+        - buildah
